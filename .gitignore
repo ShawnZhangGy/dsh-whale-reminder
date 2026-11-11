@@ -25,6 +25,7 @@ desktop.ini
 
 # 本地临时文件
 _probe/
+.npm-cache/
 *.tmp
 .env
 .env.*
