@@ -1,9 +1,9 @@
 {
   "name": "dsh-whale-reminder",
   "version": "0.1.0",
-  "private": true,
   "description": "会话结束后提醒你：窗口内常驻浮层 + 声音 + 任务栏/托盘闪烁，QQ 微信式未读体验。",
   "license": "MIT",
+  "author": "shawn",
   "type": "module",
   "main": "./lib/index.js",
   "exports": {
@@ -16,13 +16,38 @@
   "files": [
     "lib/index.js",
     "lib/client.js",
-    "lib/*.mjs",
-    "assets/*.ico",
-    "locale/*.json",
+    "lib/attention.mjs",
+    "lib/dots.mjs",
+    "lib/koffi-loader.mjs",
+    "lib/schemastery-loader.mjs",
+    "lib/selftest-route.mjs",
+    "lib/tray.mjs",
+    "lib/win32.mjs",
+    "assets/badge-1.ico",
+    "assets/badge-2.ico",
+    "assets/badge-3.ico",
+    "assets/badge-4.ico",
+    "assets/badge-5.ico",
+    "assets/badge-6.ico",
+    "assets/badge-7.ico",
+    "assets/badge-8.ico",
+    "assets/badge-9.ico",
+    "assets/badge-9plus.ico",
+    "locale/en.json",
+    "locale/zh.json",
     "cordis.patch.yml",
     "icon.svg",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ShawnZhangGy/dsh-whale-reminder.git"
+  },
+  "homepage": "https://github.com/ShawnZhangGy/dsh-whale-reminder#readme",
+  "bugs": {
+    "url": "https://github.com/ShawnZhangGy/dsh-whale-reminder/issues"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
