@@ -1,0 +1,39 @@
+{
+  "meta": {
+    "title": "whale reminder",
+    "description": "notify you when a session finishes: floating badge, sound, and taskbar/tray flash"
+  },
+  "settings": {
+    "soundVolume": "Sound volume",
+    "soundVolumeHint": "Shared by both sounds",
+    "completeSound": "Complete sound",
+    "completeSoundHint": "Plays ding-dong when a turn completes",
+    "pendingSound": "Pending sound",
+    "pendingSoundHint": "Plays two short dings when the model awaits your answer",
+    "playTest": "Preview",
+    "triggerWindowHidden": "Remind when window hidden",
+    "triggerWindowBlurred": "Remind when window blurred",
+    "triggerOtherSession": "Remind when focus is on another session",
+    "triggerComplete": "Completed",
+    "triggerPending": "Awaiting answer",
+    "triggerError": "Error",
+    "overlayCount": "Sessions shown in overlay",
+    "tooltipLength": "Tooltip char limit",
+    "overlayCorner": "Overlay corner",
+    "testButton": "Test reminder",
+    "testButtonHint": "Run the full rehearsal: taskbar flash, tray flash, sound, overlay"
+  },
+  "overlay": {
+    "unread": "unread sessions",
+    "latest": "latest",
+    "more": "{n} more unread",
+    "expand": "Expand",
+    "clear": "Clear"
+  },
+  "corner": {
+    "bottomRight": "Bottom right",
+    "bottomLeft": "Bottom left",
+    "topRight": "Top right",
+    "topLeft": "Top left"
+  }
+}
