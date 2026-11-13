@@ -53,6 +53,53 @@ internal static class Program
     private const string MAIN_WINDOW_CLASS = "Chrome_WidgetWin_1";
     private const string HARNESS_EXE = "DeepSeek Harness";
 
+    // ShowWindowAsync only posts a request to the window's owning thread, and
+    // this process exits in about a millisecond — so the request is dropped with
+    // it. Measured from the shell-launched handler: ShowWindowAsync never
+    // restored the window (even with a 12 s retry loop), while SetWindowPlacement
+    // restored it synchronously in the same call and kept the maximised state.
+    // SETTLE_MS bounds the foreground handover, which really is asynchronous.
+    private const int SETTLE_MS = 900;
+    private const int RESTORE_MS = 400;
+    private const int RESTORE_ATTEMPTS = 6;
+    private const int FOREGROUND_ATTEMPTS = 4;
+    private const int POLL_MS = 50;
+
+    private const int WM_SYSCOMMAND = 0x0112;
+    private const int SC_RESTORE = 0xF120;
+    private const int SC_MAXIMIZE = 0xF030;
+
+    private const int SW_SHOWMINIMIZED = 2;
+    private const int SW_SHOWMAXIMIZED = 3;
+    private const int WPF_RESTORETOMAXIMIZED = 0x0002;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT
+    {
+        public int x;
+        public int y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int left;
+        public int top;
+        public int right;
+        public int bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WINDOWPLACEMENT
+    {
+        public int length;
+        public int flags;
+        public int showCmd;
+        public POINT minPosition;
+        public POINT maxPosition;
+        public RECT normalPosition;
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     private struct FLASHWINFO
     {
@@ -88,6 +135,21 @@ internal static class Program
 
     [DllImport("user32.dll")]
     private static extern bool ShowWindowAsync(IntPtr hWnd, int command);
+
+    [DllImport("user32.dll")]
+    private static extern bool AllowSetForegroundWindow(int processId);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsZoomed(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT placement);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT placement);
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
@@ -217,40 +279,130 @@ internal static class Program
     // SW_RESTORE on an already-visible window would un-maximise it, so the
     // window is only cycled through SW_MINIMIZE when it is not iconic; when it
     // is iconic a plain restore already counts as that transition.
+    //
+    // Both calls are asynchronous: the window procedure runs on the owning
+    // thread, and this process exits in about a millisecond. Without waiting for
+    // the state to actually settle, the restore request is dropped when the
+    // process goes away — measured as "handler logs success, window stays
+    // minimised". So every transition is followed by a bounded poll.
+    // Raise the window and take the keyboard.
+    //
+    // The click that started this process is what makes a foreground change
+    // permissible, so the work happens here rather than in the Host, which is a
+    // background process and is always refused.
     private static void RaiseWithFocus(IntPtr window)
     {
-        try
+        try { AllowSetForegroundWindow(-1); } catch { }
+
+        var placement = new WINDOWPLACEMENT();
+        placement.length = Marshal.SizeOf(typeof(WINDOWPLACEMENT));
+        bool known = GetWindowPlacement(window, ref placement);
+        bool maximised = known &&
+            ((placement.flags & WPF_RESTORETOMAXIMIZED) != 0 || placement.showCmd == SW_SHOWMAXIMIZED);
+
+        // Windows only hands the foreground over while the process that owns it
+        // still holds the permission the click granted, and it can refuse the
+        // first attempt for reasons it does not report. The whole
+        // minimise/restore/raise sequence is therefore retried until the window
+        // actually owns the foreground, with the outcome confirmed by reading
+        // GetForegroundWindow rather than by trusting any return value.
+        for (int attempt = 0; attempt < FOREGROUND_ATTEMPTS; attempt++)
         {
+            if (GetForegroundWindow() == window) break;
+
             if (IsIconic(window))
             {
-                ShowWindowAsync(window, SW_RESTORE);
+                ShowPlacement(window, ref placement, known);
             }
-            else
+            else if (attempt > 0)
             {
-                ShowWindowAsync(window, SW_MINIMIZE);
-                ShowWindowAsync(window, SW_RESTORE);
+                // The plain raise was refused. A minimise/restore cycle is the
+                // documented way to earn the foreground again, but it costs the
+                // maximised layout, so it is only used from the second attempt.
+                ShowWindowAsync(window, SW_SHOWMINIMIZED);
+                WaitUntil(window, true, SETTLE_MS);
+                ShowPlacement(window, ref placement, known);
             }
-        }
-        catch { }
 
-        bool raised = false;
-        try
-        {
-            raised = SetForegroundWindow(window);
+            // Foreground before layout: an extra ShowWindowAsync before the
+            // handover can consume the permission the click granted.
+            Foreground(window);
         }
-        catch { }
 
-        if (!raised)
+        EnforceMaximised(window, maximised);
+        if (GetForegroundWindow() != window) FlashTaskbar(window);
+    }
+
+    // Restore a minimised window.
+    //
+    // SetWindowPlacement restores synchronously and keeps the maximised layout,
+    // but from a shell-launched handler it is refused outright (returns false
+    // while the window stays minimised). PostMessage(WM_SYSCOMMAND, SC_RESTORE)
+    // asks the window's own thread to restore itself, which needs no permission
+    // over that process, so it is the fallback that actually lands. Both are
+    // attempted, and the outcome is confirmed by polling IsIconic rather than by
+    // trusting either return value.
+    private static void ShowPlacement(IntPtr window, ref WINDOWPLACEMENT placement, bool known)
+    {
+        if (known)
         {
-            try
+            bool maximised = (placement.flags & WPF_RESTORETOMAXIMIZED) != 0 || placement.showCmd == SW_SHOWMAXIMIZED;
+            placement.showCmd = maximised ? SW_SHOWMAXIMIZED : SW_RESTORE;
+            if (SetWindowPlacement(window, ref placement) && WaitUntil(window, false, SETTLE_MS)) return;
+        }
+
+        for (int attempt = 0; attempt < RESTORE_ATTEMPTS; attempt++)
+        {
+            PostMessage(window, WM_SYSCOMMAND, new IntPtr(SC_RESTORE), IntPtr.Zero);
+            if (WaitUntil(window, false, RESTORE_MS)) return;
+            ShowWindowAsync(window, SW_RESTORE);
+            if (WaitUntil(window, false, RESTORE_MS)) return;
+        }
+    }
+
+    // Restoring a maximised window through SC_RESTORE brings it back at normal
+    // size, so the maximised state is reapplied afterwards. The same call is what
+    // un-minimises a window that was left in a normal state.
+    private static void EnforceMaximised(IntPtr window, bool maximised)
+    {
+        if (maximised == IsZoomed(window)) return;
+
+        // SetWindowPlacement is refused outright from a shell-launched handler
+        // (returns false, layout unchanged), and ShowWindowAsync(SW_SHOWMAXIMIZED)
+        // was measured to leave the window at normal size. PostMessage asks the
+        // window's own thread to perform the transition, which needs no
+        // permission over that process — the same reason SC_RESTORE is used to
+        // un-minimise. The result is confirmed by polling IsZoomed.
+        int command = maximised ? SC_MAXIMIZE : SC_RESTORE;
+        for (int attempt = 0; attempt < RESTORE_ATTEMPTS; attempt++)
+        {
+            PostMessage(window, WM_SYSCOMMAND, new IntPtr(command), IntPtr.Zero);
+            int waited = 0;
+            while (waited < RESTORE_MS)
             {
-                BringWindowToTop(window);
-                raised = SetForegroundWindow(window);
+                if (maximised == IsZoomed(window)) return;
+                System.Threading.Thread.Sleep(POLL_MS);
+                waited += POLL_MS;
             }
-            catch { }
+            if (maximised == IsZoomed(window)) return;
         }
+    }
 
-        if (!raised) FlashTaskbar(window);
+    // Re-post the foreground request until the window owns it, then fall back to
+    // flashing the taskbar so a refusal is still visible to the user.
+    private static void Foreground(IntPtr window)
+    {
+        int waited = 0;
+        while (waited < SETTLE_MS)
+        {
+            if (GetForegroundWindow() == window) return;
+            SetForegroundWindow(window);
+            BringWindowToTop(window);
+            System.Threading.Thread.Sleep(POLL_MS);
+            waited += POLL_MS;
+        }
+        if (GetForegroundWindow() == window) return;
+        FlashTaskbar(window);
     }
 
     // Bring the window to the top of the z-order without taking the keyboard, so
@@ -259,7 +411,15 @@ internal static class Program
     {
         try
         {
-            ShowWindowAsync(window, SW_SHOW);
+            if (IsIconic(window))
+            {
+                var placement = new WINDOWPLACEMENT();
+                placement.length = Marshal.SizeOf(typeof(WINDOWPLACEMENT));
+                bool known = GetWindowPlacement(window, ref placement);
+                ShowPlacement(window, ref placement, known);
+                WaitUntil(window, false, SETTLE_MS);
+            }
+
             SetWindowPos(
                 window,
                 new IntPtr(HWND_TOP),
@@ -267,6 +427,20 @@ internal static class Program
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
         }
         catch { }
+    }
+
+    // Poll until the window's minimised state matches what was asked for, or the
+    // budget runs out. A no-op when the state is already correct.
+    private static bool WaitUntil(IntPtr window, bool iconic, int timeoutMs)
+    {
+        int waited = 0;
+        while (waited < timeoutMs)
+        {
+            if (IsIconic(window) == iconic) return true;
+            System.Threading.Thread.Sleep(POLL_MS);
+            waited += POLL_MS;
+        }
+        return IsIconic(window) == iconic;
     }
 
     private static void FlashTaskbar(IntPtr window)
