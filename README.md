@@ -12,7 +12,13 @@ DeepSeek Harness 桌面版一轮会话跑完后不会主动叫你，你只能自
 
 本插件只支持 **Windows 桌面端**（依赖 Win32 任务栏/托盘 API 与 WinRT 通知）。
 
-桌面端读的是 `desktop` profile，而 `dsh plugin` 命令行按设计拒绝碰它，所以**不要用命令行装**。正确方式是在桌面端会话里让宿主内置的 `plugin_manager` 装：
+它装进桌面端的 `desktop` profile。**先把 DSH 完全退出**（含系统托盘），然后在终端执行：
+
+```
+dsh plugin --profile desktop add dsh-whale-reminder
+```
+
+装完重新打开 DSH 即可。也可以不离开 DSH：在会话里让宿主内置的 `plugin_manager` 装，效果相同。
 
 > 请使用当前桌面端内置的 `plugin_manager` 安装 `dsh-whale-reminder`，装完告诉我结果以及是否需要重启。
 
