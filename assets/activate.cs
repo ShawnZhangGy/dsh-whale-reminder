@@ -67,6 +67,28 @@ internal static class Program
     // the window visibly bounce several times on one click.
     private const int SWITCH_MS = 500;
     private const int POLL_MS = 50;
+    // ALT_TAB_MS is how long the injected Alt+Tab is given to actually move the
+    // foreground off the notification banner. Reading the foreground back before
+    // raising is what makes the difference: the handover is asynchronous, and a
+    // raise issued while the banner still owns the lock is refused.
+    private const int ALT_TAB_MS = 400;
+    // After the lock is released the raise is repeated until the read-back
+    // confirms it. Repeating a raise has no visible effect (unlike repeating a
+    // restore, which bounces the window), so this is safe to do in a loop.
+    private const int RAISE_ATTEMPTS = 8;
+    private const int RAISE_MS = 150;
+    // HOLD_MS is how long the process stays alive after the raise succeeded.
+    // Measured: handing the foreground over and then exiting at once makes the
+    // window flash and drop back, because the shell returns the foreground to the
+    // previous owner when the process that took it disappears. Staying alive for
+    // a moment lets the handover settle; the process has no window, so this is
+    // invisible.
+    private const int HOLD_MS = 1000;
+    private const int HOLD_POLL_MS = 100;
+    // The class of the shell's notification banner window. While it owns the
+    // foreground, every raise is refused, so the lock has to be released BEFORE
+    // the window is restored or raised.
+    private const string BANNER_CLASS = "Windows.UI.Core.CoreWindow";
 
     private const int WM_SYSCOMMAND = 0x0112;
     private const int SC_RESTORE = 0xF120;
@@ -198,11 +220,12 @@ internal static class Program
             // random place.
             if (id == null || id.Length == 0) return 1;
 
-            // Report first so the reply can carry the stored policy (raise with
-            // or without stealing the keyboard). Measured: an HTTP round trip of
-            // 40-60 ms does not cost the click's foreground permission — the
-            // switch below still lands 3/3 with the report in front of it.
-            bool stealFocus = true;
+            // Report first so the reply can carry the stored policy: raise the
+            // window with the keyboard, raise it without, or leave it alone.
+            // Measured: an HTTP round trip of 40-60 ms does not cost the click's
+            // foreground permission — the switch below still lands 3/3 with the
+            // report in front of it.
+            string clickAction = "raise";
             string reply = Report(port, id);
             if (reply == null)
             {
@@ -211,18 +234,22 @@ internal static class Program
                 string current = ReadPortFile();
                 if (current != null && current != port) reply = Report(current, id);
             }
-            if (reply != null && reply.IndexOf("\"stealFocus\":false", StringComparison.Ordinal) >= 0)
+            if (reply != null)
             {
-                stealFocus = false;
+                clickAction = ReadClickAction(reply);
             }
+            Log("click action=" + clickAction + " window=" + (FindHarnessWindow() != IntPtr.Zero ? "found" : "missing"));
 
             IntPtr window = FindHarnessWindow();
             if (window != IntPtr.Zero)
             {
-                if (stealFocus) RaiseWithFocus(window);
-                else RaiseWithoutFocus(window);
+                // "none" deliberately leaves the window exactly as it is: the
+                // click still switched the session, which is what a person who
+                // chose "notify only" asked for.
+                if (clickAction == "raise") RaiseWithFocus(window);
+                else if (clickAction == "show") RaiseWithoutFocus(window);
             }
-            else
+            else if (clickAction != "none")
             {
                 // Either the application is closed or its window is not the shape
                 // we know. The protocol handler in the shell knows how to start
@@ -267,6 +294,25 @@ internal static class Program
     // The plugin rewrites this file on every start, so a handler whose baked-in
     // port is stale can still find the live one. Reading is enough: the
     // restricted token Windows hands a toast handler blocks writes, not reads.
+    // Pull the click policy out of the reply body.
+    //
+    // A tiny hand-rolled scan rather than a JSON parser: the body is one line
+    // written by this plugin, and keeping the handler dependency-free matters
+    // more than general correctness. An unrecognised value falls back to the
+    // default so a stale handler can never make a click inert.
+    private static string ReadClickAction(string reply)
+    {
+        const string key = "\"clickAction\":\"";
+        int at = reply.IndexOf(key, StringComparison.Ordinal);
+        if (at < 0) return "raise";
+        int start = at + key.Length;
+        int end = reply.IndexOf('"', start);
+        if (end < 0) return "raise";
+        string value = reply.Substring(start, end - start);
+        if (value == "raise" || value == "show" || value == "none") return value;
+        return "raise";
+    }
+
     private static string ReadPortFile()
     {
         try
@@ -311,6 +357,8 @@ internal static class Program
     // background process and is always refused.
     private static void RaiseWithFocus(IntPtr window)
     {
+        Log("raise target=" + Describe(window) + " iconic=" + IsIconic(window) + " zoomed=" + IsZoomed(window)
+            + " foreground=" + Describe(GetForegroundWindow()));
         try { AllowSetForegroundWindow(-1); } catch { }
 
         var placement = new WINDOWPLACEMENT();
@@ -320,34 +368,82 @@ internal static class Program
         // A minimised window comes back through the same transition its taskbar
         // button performs, and that transition hands the foreground over by
         // itself, so nothing else is attempted here.
+        //
+        // The banner lock is released first, and only here: while the window is
+        // minimised nothing of it is on screen, so the Alt+Tab that releases the
+        // lock has no visible effect. For a visible window the same call would be
+        // a second foreground change on top of the raise, which reads as a flash —
+        // so it is deferred to the fallback below, after the silent attempts.
         if (IsIconic(window))
         {
+            ClearBannerForeground();
             ShowPlacement(window, ref placement, known);
             WaitUntil(window, false, SETTLE_MS);
-            if (GetForegroundWindow() == window) return;
+            if (GetForegroundWindow() == window)
+            {
+                HoldForeground(window, HOLD_MS);
+                return;
+            }
         }
+
+        // A notification banner keeps the foreground lock for as long as it is on
+        // screen, and every silent call is refused while it does (measured:
+        // SetForegroundWindow, SwitchToThisWindow, HWND_TOPMOST, minimising the
+        // banner and closing it all fail; only a real Alt+Tab releases the lock).
+        //
+        // So when the banner is in front the silent attempts are skipped outright.
+        // They cannot succeed, and BringWindowToTop still changes the z-order on
+        // the way: the window pops up, the banner pushes it back, the raise lifts it
+        // again — which is exactly the flash the user sees. Going straight to the
+        // release leaves the raise as the only visible change.
+        bool locked = ClearBannerForeground();
 
         // Covered but visible: one switch, which performs the same handover the
         // taskbar does. Measured 3/3 here, where SetForegroundWindow managed 1/3.
-        SwitchToThisWindow(window, true);
-        if (WaitForeground(window, SWITCH_MS)) return;
+        if (!locked)
+        {
+            SwitchToThisWindow(window, true);
+            if (WaitForeground(window, SWITCH_MS))
+            {
+                HoldForeground(window, HOLD_MS);
+                return;
+            }
 
-        // One quiet retry. Both calls are attempted together because their
-        // return values are unreliable in either direction and only the read-back
-        // matters.
-        SetForegroundWindow(window);
-        BringWindowToTop(window);
-        if (WaitForeground(window, SETTLE_MS)) return;
+            // One quiet retry. Both calls are attempted together because their
+            // return values are unreliable in either direction and only the
+            // read-back matters.
+            SetForegroundWindow(window);
+            BringWindowToTop(window);
+            if (WaitForeground(window, SETTLE_MS))
+            {
+                HoldForeground(window, HOLD_MS);
+                return;
+            }
+        }
 
-        // Last resort: one quick Alt+Tab. A notification banner keeps the
-        // foreground lock for as long as it is on screen, and every silent call
-        // is refused while it does (measured: SetForegroundWindow, SwitchToThisWindow,
-        // HWND_TOPMOST, minimising the banner and closing it all fail; only a real
-        // Alt+Tab releases the lock). The keys are pressed and released without
-        // pausing, so the task switcher does not have time to draw.
-        AltTabOnce();
-        SetForegroundWindow(window);
-        if (WaitForeground(window, SETTLE_MS)) return;
+        // The raise has to wait for the release to land. Measured: calling
+        // SetForegroundWindow in the same millisecond as the key event is refused
+        // again, because the banner still owns the lock at that instant.
+        for (int attempt = 0; attempt < RAISE_ATTEMPTS; attempt++)
+        {
+            SetForegroundWindow(window);
+            BringWindowToTop(window);
+            if (WaitForeground(window, RAISE_MS))
+            {
+                Log("alt-tab: raised on attempt " + attempt);
+                HoldForeground(window, HOLD_MS);
+                return;
+            }
+
+            SwitchToThisWindow(window, true);
+            if (WaitForeground(window, RAISE_MS))
+            {
+                Log("alt-tab: switched on attempt " + attempt);
+                HoldForeground(window, HOLD_MS);
+                return;
+            }
+        }
+        Log("alt-tab: gave up, foreground=" + Describe(GetForegroundWindow()));
 
         // A refusal ends here as a taskbar flash, and the banner stays in the
         // notification centre for a later click. A minimise/restore cycle is not
@@ -463,6 +559,113 @@ internal static class Program
         }
         catch { }
     }
+    // Compact "hwnd class/title" description of a window, for the activation trail.
+    private static string Describe(IntPtr window)
+    {
+        if (window == IntPtr.Zero) return "0";
+        try
+        {
+            var title = new StringBuilder(256);
+            var name = new StringBuilder(256);
+            GetWindowText(window, title, title.Capacity);
+            GetClassName(window, name, name.Capacity);
+            return "0x" + window.ToInt64().ToString("x") + " [" + name + "/" + title + "]";
+        }
+        catch { return "0x" + window.ToInt64().ToString("x"); }
+    }
+
+    // Keep the window in the foreground for a while after the raise.
+    //
+    // The shell returns the foreground to the previous owner as soon as the process
+    // that claimed it exits, which reads as a one-frame flash. Re-claiming on every
+    // poll until the budget is spent makes the handover stick. Re-claiming an
+    // already-raised window is a no-op, so there is nothing to bounce.
+    private static void HoldForeground(IntPtr window, int timeoutMs)
+    {
+        int waited = 0;
+        int reclaimed = 0;
+        while (waited < timeoutMs)
+        {
+            if (GetForegroundWindow() != window)
+            {
+                SetForegroundWindow(window);
+                BringWindowToTop(window);
+                reclaimed++;
+            }
+            System.Threading.Thread.Sleep(HOLD_POLL_MS);
+            waited += HOLD_POLL_MS;
+        }
+        Log("hold: done after " + waited + "ms, reclaimed=" + reclaimed
+            + " foreground=" + Describe(GetForegroundWindow()));
+    }
+
+    // Poll until the foreground is no longer the given window, or the budget runs
+    // out. Returns whether it moved.
+    private static bool WaitForegroundAway(IntPtr previous, int timeoutMs)
+    {
+        int waited = 0;
+        while (waited < timeoutMs)
+        {
+            if (GetForegroundWindow() != previous) return true;
+            System.Threading.Thread.Sleep(POLL_MS);
+            waited += POLL_MS;
+        }
+        return GetForegroundWindow() != previous;
+    }
+
+    // One-line trail of what the raise actually did, kept next to the handler copy.
+    //
+    // The foreground rules differ between a plain protocol launch and a click on a
+    // live notification banner, and the second one cannot be reproduced on demand,
+    // so the trail is written on every activation. It is bounded and never throws.
+    private static void Log(string text)
+    {
+        try
+        {
+            string directory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "dsh-whale-reminder");
+            Directory.CreateDirectory(directory);
+            string path = Path.Combine(directory, "activate.log");
+            var info = new FileInfo(path);
+            if (info.Exists && info.Length > 128 * 1024) info.Delete();
+            File.AppendAllText(
+                path,
+                DateTime.Now.ToString("HH:mm:ss.fff") + " " + text + Environment.NewLine,
+                Encoding.UTF8);
+        }
+        catch { }
+    }
+
+    // Release the foreground lock held by the shell's notification banner.
+    //
+    // Only a real Alt+Tab does it (measured: SetForegroundWindow, SwitchToThisWindow,
+    // HWND_TOPMOST, minimising the banner and WM_CLOSE/SC_CLOSE are all refused),
+    // and the handover is asynchronous, so the foreground is read back before
+    // returning. A no-op when the banner is not in front.
+    private static bool ClearBannerForeground()
+    {
+        IntPtr foreground = GetForegroundWindow();
+        if (foreground == IntPtr.Zero) return false;
+
+        string name;
+        try
+        {
+            var buffer = new StringBuilder(256);
+            GetClassName(foreground, buffer, buffer.Capacity);
+            name = buffer.ToString();
+        }
+        catch { return false; }
+
+        if (name != BANNER_CLASS) return false;
+
+        Log("banner in front: " + Describe(foreground));
+        AltTabOnce();
+        bool moved = WaitForegroundAway(foreground, ALT_TAB_MS);
+        Log("banner released=" + moved + " now=" + Describe(GetForegroundWindow()));
+        return moved;
+    }
+
     private static void FlashTaskbar(IntPtr window)
     {
         try
