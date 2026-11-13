@@ -166,6 +166,16 @@ internal static class Program
     [DllImport("user32.dll", SetLastError = true)]
     private static extern void SwitchToThisWindow(IntPtr hWnd, bool altTab);
 
+    // Synthetic input. Windows trusts injected keystrokes in a way it does not
+    // trust SetForegroundWindow, which is the only measured way to release the
+    // foreground lock a notification banner holds.
+    [DllImport("user32.dll")]
+    private static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+
+    private const byte VK_MENU = 0x12;
+    private const byte VK_TAB = 0x09;
+    private const uint KEYEVENTF_KEYUP = 0x0002;
+
     [DllImport("user32.dll")]
     private static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
 
@@ -329,10 +339,19 @@ internal static class Program
         BringWindowToTop(window);
         if (WaitForeground(window, SETTLE_MS)) return;
 
-        // Nothing else is attempted: a minimise/restore cycle would earn the
-        // foreground but makes the window visibly bounce, which is worse than
-        // asking for one click. A refusal ends here as a taskbar flash, and the
-        // banner stays in the notification centre for a later click.
+        // Last resort: one quick Alt+Tab. A notification banner keeps the
+        // foreground lock for as long as it is on screen, and every silent call
+        // is refused while it does (measured: SetForegroundWindow, SwitchToThisWindow,
+        // HWND_TOPMOST, minimising the banner and closing it all fail; only a real
+        // Alt+Tab releases the lock). The keys are pressed and released without
+        // pausing, so the task switcher does not have time to draw.
+        AltTabOnce();
+        SetForegroundWindow(window);
+        if (WaitForeground(window, SETTLE_MS)) return;
+
+        // A refusal ends here as a taskbar flash, and the banner stays in the
+        // notification centre for a later click. A minimise/restore cycle is not
+        // used: it earns the foreground but makes the window visibly bounce.
         FlashTaskbar(window);
     }
 
@@ -431,6 +450,19 @@ internal static class Program
         return IsIconic(window) == iconic;
     }
 
+    // Press and release Alt+Tab with no dwell, which releases the foreground
+    // lock without giving the task switcher time to appear.
+    private static void AltTabOnce()
+    {
+        try
+        {
+            keybd_event(VK_MENU, 0, 0, UIntPtr.Zero);
+            keybd_event(VK_TAB, 0, 0, UIntPtr.Zero);
+            keybd_event(VK_TAB, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+            keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        }
+        catch { }
+    }
     private static void FlashTaskbar(IntPtr window)
     {
         try
