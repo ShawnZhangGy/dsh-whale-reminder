@@ -36,7 +36,7 @@ DeepSeek Harness 桌面版一轮会话跑完后不会主动叫你，你只能自
 
 - **host 半区**（`ELECTRON_RUN_AS_NODE` 的独立 Node 进程）：Windows 原生能力（koffi Win32 API：`FlashWindowEx`、`Shell_NotifyIcon*`）负责任务栏闪烁与托盘徽章；**系统通知**走 `HKCU\Software\Classes\AppUserModelId\Shawn.DSHWhaleReminder` 注册独立应用身份 + PowerShell WinRT `ToastNotificationManager` 发送 ToastGeneric；监听 `session/event` 的 `turn/end` / `approval/asked` / `tool/call(ask_user_question)` 触发提醒。
 - **通知点击跳转**：toast 用 `activationType="protocol"` 携带 `dsh-whale-reminder://open/<会话 id>`；注册表里的协议处理器是一个原生小程序 `assets/activate.exe`（C# 编译，不弹控制台窗口），它把收到的 id 通过 **loopback HTTP** 回传给正在运行的宿主（端口写在注册表命令里），宿主把这次点击**广播**给所有窗口（每个窗口按单调递增的序号去重，只有序号变新时才导航，刚加载的窗口只记下基线、不重放旧点击），client 半区在窗口处于后台时每 1.5 秒轮询一次，拿到新序号就调用 `uiWorkspace.openSession`，导航确认后再把光标放进输入框（`[data-composer-input]`）。**处理器不写任何文件**——早期用 `.vbs` + `%LOCALAPPDATA%` 落盘的方案在受限令牌下会静默失败，改用 HTTP 后不再受文件权限影响。不新增常驻进程，也不需要宿主配合。
-- **为什么提窗口在 `activate.exe` 里做**：Windows 只允许「当前持有前台权限的进程」调 `SetForegroundWindow`，宿主是后台进程，从它那里唤窗口必然被拒（实测直接调用仅 2/7 成功）。处理器由鼠标点击直接启动、持有前台权限，所以在它里面做。三个实测结论决定了实现：① `ShowWindowAsync` 只把请求投递给窗口线程，而处理器进程约 1 毫秒就退出，请求随之丢失（从 shell 启动时 12 秒重试循环仍无法恢复）；② `SetWindowPlacement` 在 bash 里直接调用可同步恢复并保住最大化，但从 shell 启动的处理器里一律返回 false；③ `PostMessage(WM_SYSCOMMAND, SC_RESTORE)` 由窗口自己的线程执行，不需要调用方对该进程有任何权限，是唯一稳定生效的恢复手段。因此恢复走 `PostMessage`，前台用「轮询 `GetForegroundWindow` 直到真的拿到」而不是相信 `SetForegroundWindow` 的返回值（它两个方向都不可信），第一次直接抬、被拒后才退到「先最小化再恢复」（实测 8/8 有效，代价是丢最大化，故只在第二次尝试使用）。权限策略由宿主在 HTTP 响应里带回（`stealFocus`），关掉开关时改用 `SetWindowPos(SWP_NOACTIVATE)` 只浮上来不抢焦点；仍失败则闪任务栏兜底。
+- **为什么提窗口在 `activate.exe` 里做**：Windows 只允许「当前持有前台权限的进程」改前台，宿主是后台进程，从它那里唤窗口必然被拒（实测直接调用仅 1/3 成功）。处理器由鼠标点击直接启动、持有该权限，所以工作都在它里面做。三条实测结论决定了实现：① `ShowWindowAsync` 只是把请求投递给窗口线程，而处理器约 1 毫秒就退出，请求随之丢失（从 shell 启动时 12 秒重试仍无法恢复），因此恢复后必须轮询 `IsIconic` 确认落定；② 恢复最小化窗口本身就会带来前台，所以这条路径不再额外抬窗，也就不会闪；③ 可见但被覆盖时，`SwitchToThisWindow`（任务栏点击用的同一个交接）实测 3/3，而 `SetForegroundWindow` 只有 1/3，因此首选前者、后者只做一次静默重试。所有抬窗 API 的返回值两个方向都不可信，成功与否一律靠轮询 `GetForegroundWindow` 读回。**不做「先最小化再恢复」的重试循环**：它能拿到前台（实测 8/8），但会让窗口明显弹跳，代价高于让用户再点一次，所以拒绝时只闪任务栏，横幅仍留在通知中心可再点。权限策略由宿主在 HTTP 响应里带回（`stealFocus`），关掉开关时改用 `SetWindowPos(SWP_NOACTIVATE)` 只浮上来不抢焦点。
 - **client 半区**（浏览器渲染进程）：`shell.overlay` 常驻浮层 + Web Audio 双音效 + `settings.section`（设置面板侧栏）与 `plugins.row.config`（插件管理器行）双座位共用同一张表单，通过 `__whale-reminder/*` 私有路由与 host 半区通信。
 - **配置持久化**：走官方 Config schema（`@deepseek-ai/schemastery`，31 字段全 `.volatile()`）+ `settings.configure({auto:false})` + client 侧 `configForms`。
 - **语言**：插件自带中文/English 切换（默认中文），浮层、设置页、托盘 tooltip、系统通知四处一致，不跟随应用语言。
@@ -59,7 +59,7 @@ DeepSeek Harness 桌面版一轮会话跑完后不会主动叫你，你只能自
 - 托盘图标定位在 Win11 溢出区可能失败（`Shell_NotifyIconGetRect` 无 rect），此时自动降级为任务栏闪烁兜底。
 - 系统通知需要 PowerShell 可用；被组策略禁用的机器上会自动降级为「静默不发」，其余提醒通道不受影响。通知里显示的会话语义取自你那一轮输入的第一行，会话没有人类输入时退化为会话 id 前 8 位。
 - 点击通知跳转依赖插件首次启动时写入的协议注册表项（`HKCU\Software\Classes\dsh-whale-reminder`，仅当前用户，无需管理员权限），以及 `%LOCALAPPDATA%\dsh-whale-reminder\activate.exe` 这个处理器副本（每次启动自动刷新）。若被安全软件清理掉，重启一次客户端即可自动修复；修复前的点击只会把窗口提到前台。点击后若目标会话已不存在或无法导航，客户端日志会留下 `did not navigate` 警告，而不是静默失败。
-- 窗口处于最大化状态且被其他窗口盖住时，第一次尝试直接抢前台，不会闪最小化动画；只有当这次被 Windows 拒绝（极少见）才会退到「先最小化再恢复」并闪一下。最小化状态恢复后会自动还原最大化布局。
+- 点击横幅抬窗口分两条路：最小化时通过恢复动作拿到前台（恢复本身就会带来焦点），最大化但被盖住时走任务栏点击用的同一个交接（`SwitchToThisWindow`）。两条路都只做一次，不会闪最小化动画。若 Windows 因前台锁定拒绝（例如屏幕已锁、或另一个程序刚抢过前台），这一下会安静失败，只闪任务栏、不再重试——横幅仍留在通知中心，稍后再点即可。
 - 若 DSH 已完全退出，点击通知中心里的旧横幅不会启动它（处理器只在 DSH 运行时才能把点击投递给宿主）。
 
 ## 许可证

@@ -1,6 +1,6 @@
 {
   "name": "dsh-whale-reminder",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "会话提醒插件：Windows 系统通知 + 声音 + 窗口内浮层 + 任务栏/托盘闪烁；通知可点击直达会话",
   "license": "MIT",
   "author": "shawn",
