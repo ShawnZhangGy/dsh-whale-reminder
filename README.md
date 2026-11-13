@@ -33,7 +33,7 @@ DeepSeek Harness 桌面版一轮会话跑完后不会主动叫你，你只能自
 ## 技术要点
 
 - **host 半区**（`ELECTRON_RUN_AS_NODE` 的独立 Node 进程）：Windows 原生能力（koffi Win32 API：`FlashWindowEx`、`Shell_NotifyIcon*`）负责任务栏闪烁与托盘徽章；**系统通知**走 `HKCU\Software\Classes\AppUserModelId\Shawn.DSHWhaleReminder` 注册独立应用身份 + PowerShell WinRT `ToastNotificationManager` 发送 ToastGeneric；监听 `session/event` 的 `turn/end` / `approval/asked` / `tool/call(ask_user_question)` 触发提醒。
-- **通知点击跳转**：toast 用 `activationType="protocol"` 携带 `dsh-whale-reminder://open/<会话 id>`；注册表里的协议处理器是一个原生小程序 `assets/activate.exe`（C# 编译，不弹控制台窗口），它把收到的 id 通过 **loopback HTTP** 回传给正在运行的宿主（端口写在注册表命令里），client 半区在窗口处于后台时每 1.5 秒轮询一次取走它并调用 `uiWorkspace.openSession`。**处理器不写任何文件**——早期用 `.vbs` + `%LOCALAPPDATA%` 落盘的方案在受限令牌下会静默失败，改用 HTTP 后不再受文件权限影响。不新增常驻进程，也不需要宿主配合。
+- **通知点击跳转**：toast 用 `activationType="protocol"` 携带 `dsh-whale-reminder://open/<会话 id>`；注册表里的协议处理器是一个原生小程序 `assets/activate.exe`（C# 编译，不弹控制台窗口），它把收到的 id 通过 **loopback HTTP** 回传给正在运行的宿主（端口写在注册表命令里），宿主把这次点击**广播**给所有窗口（每个窗口按单调递增的序号去重，只有序号变新时才导航，刚加载的窗口只记下基线、不重放旧点击），client 半区在窗口处于后台时每 1.5 秒轮询一次，拿到新序号就调用 `uiWorkspace.openSession`。**处理器不写任何文件**——早期用 `.vbs` + `%LOCALAPPDATA%` 落盘的方案在受限令牌下会静默失败，改用 HTTP 后不再受文件权限影响。不新增常驻进程，也不需要宿主配合。
 - **client 半区**（浏览器渲染进程）：`shell.overlay` 常驻浮层 + Web Audio 双音效 + `settings.section`（设置面板侧栏）与 `plugins.row.config`（插件管理器行）双座位共用同一张表单，通过 `__whale-reminder/*` 私有路由与 host 半区通信。
 - **配置持久化**：走官方 Config schema（`@deepseek-ai/schemastery`，29 字段全 `.volatile()`）+ `settings.configure({auto:false})` + client 侧 `configForms`。
 - **语言**：插件自带中文/English 切换（默认中文），浮层、设置页、托盘 tooltip、系统通知四处一致，不跟随应用语言。
@@ -55,7 +55,7 @@ DeepSeek Harness 桌面版一轮会话跑完后不会主动叫你，你只能自
 - 仅 Windows 桌面版（依赖 Win32 托盘/任务栏 API 与 WinRT 通知）。macOS/Linux 上 host 半区会安静降级，只有窗口内浮层与声音可用。
 - 托盘图标定位在 Win11 溢出区可能失败（`Shell_NotifyIconGetRect` 无 rect），此时自动降级为任务栏闪烁兜底。
 - 系统通知需要 PowerShell 可用；被组策略禁用的机器上会自动降级为「静默不发」，其余提醒通道不受影响。通知里显示的会话语义取自你那一轮输入的第一行，会话没有人类输入时退化为会话 id 前 8 位。
-- 点击通知跳转依赖插件首次启动时写入的协议注册表项（`HKCU\Software\Classes\dsh-whale-reminder`，仅当前用户，无需管理员权限），以及 `%LOCALAPPDATA%\dsh-whale-reminder\activate.exe` 这个处理器副本（每次启动自动刷新）。若被安全软件清理掉，重启一次客户端即可自动修复；修复前的点击只会把窗口提到前台。
+- 点击通知跳转依赖插件首次启动时写入的协议注册表项（`HKCU\Software\Classes\dsh-whale-reminder`，仅当前用户，无需管理员权限），以及 `%LOCALAPPDATA%\dsh-whale-reminder\activate.exe` 这个处理器副本（每次启动自动刷新）。若被安全软件清理掉，重启一次客户端即可自动修复；修复前的点击只会把窗口提到前台。点击后若目标会话已不存在或无法导航，客户端日志会留下 `did not navigate` 警告，而不是静默失败。
 
 ## 许可证
 
