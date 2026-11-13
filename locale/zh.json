@@ -27,7 +27,8 @@
     "triggers": "提醒时机",
     "attention": "注意力规则",
     "soundsOverlay": "声音与浮层",
-    "enabled": "启用提醒"
+    "enabled": "启用提醒",
+    "sectionLabel": "鲸鱼提醒"
   },
   "overlay": {
     "unread": "个会话未读",

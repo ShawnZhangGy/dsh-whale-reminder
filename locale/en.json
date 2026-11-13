@@ -27,7 +27,8 @@
     "triggers": "When to remind",
     "attention": "Attention rules",
     "soundsOverlay": "Sound and overlay",
-    "enabled": "Enable reminders"
+    "enabled": "Enable reminders",
+    "sectionLabel": "Whale Reminder"
   },
   "overlay": {
     "unread": "unread sessions",
