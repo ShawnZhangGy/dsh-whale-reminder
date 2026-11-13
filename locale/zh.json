@@ -6,10 +6,6 @@
   "settings": {
     "soundVolume": "声音音量",
     "soundVolumeHint": "两个音效共用此音量",
-    "completeSound": "完成音效",
-    "completeSoundHint": "一轮正常结束时播放「叮—咚」",
-    "pendingSound": "待回答音效",
-    "pendingSoundHint": "模型在等你回答时播放两声短促「叮叮」",
     "playTest": "试听",
     "triggerWindowHidden": "窗口被隐藏时提醒",
     "triggerWindowBlurred": "窗口失焦时提醒",
@@ -21,7 +17,17 @@
     "tooltipLength": "tooltip 字数上限",
     "overlayCorner": "浮层停靠角落",
     "testButton": "测试提醒",
-    "testButtonHint": "一键演练：闪任务栏 + 闪托盘 + 出声 + 浮层出现"
+    "testButtonHint": "一键演练：闪任务栏 + 闪托盘 + 出声 + 浮层出现",
+    "language": "语言",
+    "languageHint": "仅影响本插件的声音提示、浮层与设置页",
+    "systemNotify": "系统通知",
+    "systemNotifyHint": "在 Windows 通知中心弹出横幅；关闭后不影响任务栏与托盘",
+    "systemNotifySound": "通知带提示音",
+    "systemNotifySoundHint": "使用 Windows 通知自带的提示音；与本插件的音效相互独立",
+    "triggers": "提醒时机",
+    "attention": "注意力规则",
+    "soundsOverlay": "声音与浮层",
+    "enabled": "启用提醒"
   },
   "overlay": {
     "unread": "个会话未读",

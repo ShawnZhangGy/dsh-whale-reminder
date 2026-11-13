@@ -6,10 +6,6 @@
   "settings": {
     "soundVolume": "Sound volume",
     "soundVolumeHint": "Shared by both sounds",
-    "completeSound": "Complete sound",
-    "completeSoundHint": "Plays ding-dong when a turn completes",
-    "pendingSound": "Pending sound",
-    "pendingSoundHint": "Plays two short dings when the model awaits your answer",
     "playTest": "Preview",
     "triggerWindowHidden": "Remind when window hidden",
     "triggerWindowBlurred": "Remind when window blurred",
@@ -21,7 +17,17 @@
     "tooltipLength": "Tooltip char limit",
     "overlayCorner": "Overlay corner",
     "testButton": "Test reminder",
-    "testButtonHint": "Run the full rehearsal: taskbar flash, tray flash, sound, overlay"
+    "testButtonHint": "Run the full rehearsal: taskbar flash, tray flash, sound, overlay",
+    "language": "Language",
+    "languageHint": "Affects only this plugin's sound cues, overlay and settings page",
+    "systemNotify": "System notification",
+    "systemNotifyHint": "Show a Windows notification banner; off leaves the taskbar and tray untouched",
+    "systemNotifySound": "Play a notification sound",
+    "systemNotifySoundHint": "Uses the Windows notification sound; independent of this plugin's own cues",
+    "triggers": "When to remind",
+    "attention": "Attention rules",
+    "soundsOverlay": "Sound and overlay",
+    "enabled": "Enable reminders"
   },
   "overlay": {
     "unread": "unread sessions",
